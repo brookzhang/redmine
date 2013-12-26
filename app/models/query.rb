@@ -28,11 +28,12 @@ class QueryColumn
     end
     self.default_order = options[:default_order]
     @inline = options.key?(:inline) ? options[:inline] : true
-    @caption_key = options[:caption] || "field_#{name}"
+    @caption_key = options[:caption] || "field_#{name}".to_sym
+    @frozen = options[:frozen]
   end
 
   def caption
-    l(@caption_key)
+    @caption_key.is_a?(Symbol) ? l(@caption_key) : @caption_key
   end
 
   # Returns true if the column is sortable, otherwise false
@@ -46,6 +47,10 @@ class QueryColumn
 
   def inline?
     @inline
+  end
+
+  def frozen?
+    @frozen
   end
 
   def value(object)
@@ -76,8 +81,12 @@ class QueryCustomFieldColumn < QueryColumn
   end
 
   def value(object)
-    cv = object.custom_values.select {|v| v.custom_field_id == @cf.id}.collect {|v| @cf.cast_value(v.value)}
-    cv.size > 1 ? cv.sort {|a,b| a.to_s <=> b.to_s} : cv.first
+    if custom_field.visible_by?(object.project, User.current)
+      cv = object.custom_values.select {|v| v.custom_field_id == @cf.id}.collect {|v| @cf.cast_value(v.value)}
+      cv.size > 1 ? cv.sort {|a,b| a.to_s <=> b.to_s} : cv.first
+    else
+      nil
+    end
   end
 
   def css_classes
@@ -111,17 +120,33 @@ class Query < ActiveRecord::Base
   class StatementInvalid < ::ActiveRecord::StatementInvalid
   end
 
+  VISIBILITY_PRIVATE = 0
+  VISIBILITY_ROLES   = 1
+  VISIBILITY_PUBLIC  = 2
+
   belongs_to :project
   belongs_to :user
+  has_and_belongs_to_many :roles, :join_table => "#{table_name_prefix}queries_roles#{table_name_suffix}", :foreign_key => "query_id"
   serialize :filters
   serialize :column_names
   serialize :sort_criteria, Array
+  serialize :options, Hash
 
   attr_protected :project_id, :user_id
 
   validates_presence_of :name
   validates_length_of :name, :maximum => 255
+  validates :visibility, :inclusion => { :in => [VISIBILITY_PUBLIC, VISIBILITY_ROLES, VISIBILITY_PRIVATE] }
   validate :validate_query_filters
+  validate do |query|
+    errors.add(:base, l(:label_role_plural) + ' ' + l('activerecord.errors.messages.blank')) if query.visibility == VISIBILITY_ROLES && roles.blank?
+  end
+
+  after_save do |query|
+    if query.visibility_changed? && query.visibility != VISIBILITY_ROLES
+	    query.roles.clear
+	  end
+  end
 
   class_attribute :operators
   self.operators = {
@@ -240,9 +265,9 @@ class Query < ActiveRecord::Base
   def editable_by?(user)
     return false unless user
     # Admin can edit them all and regular users can edit their private queries
-    return true if user.admin? || (!is_public && self.user_id == user.id)
+    return true if user.admin? || (is_private? && self.user_id == user.id)
     # Members can not edit public queries that are for all project (only admin is allowed to)
-    is_public && !@is_for_all && user.allowed_to?(:manage_public_queries, project)
+    is_public? && !@is_for_all && user.allowed_to?(:manage_public_queries, project)
   end
 
   def trackers
@@ -382,9 +407,10 @@ class Query < ActiveRecord::Base
 
   def columns
     # preserve the column_names order
-    (has_default_columns? ? default_columns_names : column_names).collect do |name|
+    cols = (has_default_columns? ? default_columns_names : column_names).collect do |name|
        available_columns.find { |col| col.name == name }
     end.compact
+    available_columns.select(&:frozen?) | cols
   end
 
   def inline_columns
@@ -421,6 +447,10 @@ class Query < ActiveRecord::Base
 
   def has_column?(column)
     column_names && column_names.include?(column.is_a?(QueryColumn) ? column.name : column)
+  end
+
+  def has_custom_field_column?
+    columns.any? {|column| column.is_a? QueryCustomFieldColumn}
   end
 
   def has_default_columns?
@@ -539,6 +569,11 @@ class Query < ActiveRecord::Base
       end
     end if filters and valid?
 
+    if (c = group_by_column) && c.is_a?(QueryCustomFieldColumn)
+      # Excludes results for which the grouped custom field is not visible
+      filters_clauses << c.custom_field.visibility_by_project_condition
+    end
+
     filters_clauses << project_statement
     filters_clauses.reject!(&:blank?)
 
@@ -552,7 +587,7 @@ class Query < ActiveRecord::Base
     db_field = 'value'
     filter = @available_filters[field]
     return nil unless filter
-    if filter[:format] == 'user'
+    if filter[:field].format.target_class && filter[:field].format.target_class <= User
       if value.delete('me')
         value.push User.current.id.to_s
       end
@@ -571,8 +606,14 @@ class Query < ActiveRecord::Base
       customized_class = queried_class.reflect_on_association(assoc.to_sym).klass.base_class rescue nil
       raise "Unknown #{queried_class.name} association #{assoc}" unless customized_class
     end
-    "#{queried_table_name}.#{customized_key} #{not_in} IN (SELECT #{customized_class.table_name}.id FROM #{customized_class.table_name} LEFT OUTER JOIN #{db_table} ON #{db_table}.customized_type='#{customized_class}' AND #{db_table}.customized_id=#{customized_class.table_name}.id AND #{db_table}.custom_field_id=#{custom_field_id} WHERE " +
-      sql_for_field(field, operator, value, db_table, db_field, true) + ')'
+    where = sql_for_field(field, operator, value, db_table, db_field, true)
+    if operator =~ /[<>]/
+      where = "(#{where}) AND #{db_table}.#{db_field} <> ''"
+    end
+    "#{queried_table_name}.#{customized_key} #{not_in} IN (" +
+      "SELECT #{customized_class.table_name}.id FROM #{customized_class.table_name}" +
+      " LEFT OUTER JOIN #{db_table} ON #{db_table}.customized_type='#{customized_class}' AND #{db_table}.customized_id=#{customized_class.table_name}.id AND #{db_table}.custom_field_id=#{custom_field_id}" +
+      " WHERE (#{where}) AND (#{filter[:field].visibility_by_project_condition}))"
   end
 
   # Helper method to generate the WHERE sql for a +field+, +operator+ and a +value+
@@ -721,54 +762,44 @@ class Query < ActiveRecord::Base
     return sql
   end
 
-  def add_custom_fields_filters(custom_fields, assoc=nil)
-    return unless custom_fields.present?
+  # Adds a filter for the given custom field
+  def add_custom_field_filter(field, assoc=nil)
+    options = field.format.query_filter_options(field, self)
+    if field.format.target_class && field.format.target_class <= User
+      if options[:values].is_a?(Array) && User.current.logged?
+        options[:values].unshift ["<< #{l(:label_me)} >>", "me"]
+      end
+    end
 
-    custom_fields.select(&:is_filter?).sort.each do |field|
-      case field.field_format
-      when "text"
-        options = { :type => :text }
-      when "list"
-        options = { :type => :list_optional, :values => field.possible_values }
-      when "date"
-        options = { :type => :date }
-      when "bool"
-        options = { :type => :list, :values => [[l(:general_text_yes), "1"], [l(:general_text_no), "0"]] }
-      when "int"
-        options = { :type => :integer }
-      when "float"
-        options = { :type => :float }
-      when "user", "version"
-        next unless project
-        values = field.possible_values_options(project)
-        if User.current.logged? && field.field_format == 'user'
-          values.unshift ["<< #{l(:label_me)} >>", "me"]
-        end
-        options = { :type => :list_optional, :values => values }
-      else
-        options = { :type => :string }
-      end
-      filter_id = "cf_#{field.id}"
-      filter_name = field.name
-      if assoc.present?
-        filter_id = "#{assoc}.#{filter_id}"
-        filter_name = l("label_attribute_of_#{assoc}", :name => filter_name)
-      end
-      add_available_filter filter_id, options.merge({
-               :name => filter_name,
-               :format => field.field_format,
-               :field => field
-             })
+    filter_id = "cf_#{field.id}"
+    filter_name = field.name
+    if assoc.present?
+      filter_id = "#{assoc}.#{filter_id}"
+      filter_name = l("label_attribute_of_#{assoc}", :name => filter_name)
+    end
+    add_available_filter filter_id, options.merge({
+      :name => filter_name,
+      :field => field
+    })
+  end
+
+  # Adds filters for the given custom fields scope
+  def add_custom_fields_filters(scope, assoc=nil)
+    scope.visible.where(:is_filter => true).sorted.each do |field|
+      add_custom_field_filter(field, assoc)
     end
   end
 
+  # Adds filters for the given associations custom fields
   def add_associations_custom_fields_filters(*associations)
-    fields_by_class = CustomField.where(:is_filter => true).group_by(&:class)
+    fields_by_class = CustomField.visible.where(:is_filter => true).group_by(&:class)
     associations.each do |assoc|
       association_klass = queried_class.reflect_on_association(assoc).klass
       fields_by_class.each do |field_class, fields|
         if field_class.customized_class <= association_klass
-          add_custom_fields_filters(fields, assoc)
+          fields.sort.each do |field|
+            add_custom_field_filter(field, assoc)
+          end
         end
       end
     end

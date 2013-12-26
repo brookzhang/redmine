@@ -57,6 +57,20 @@ class CustomFieldTest < ActiveSupport::TestCase
     assert field.valid?
   end
 
+  def test_field_format_should_be_validated
+    field = CustomField.new(:name => 'Test', :field_format => 'foo')
+    assert !field.valid?
+  end
+
+  def test_field_format_validation_should_accept_formats_added_at_runtime
+    Redmine::FieldFormat.add 'foobar', Class.new(Redmine::FieldFormat::Base)
+
+    field = CustomField.new(:name => 'Some Custom Field', :field_format => 'foobar')
+    assert field.valid?, 'field should be valid'
+  ensure
+    Redmine::FieldFormat.delete 'foobar'
+  end
+
   def test_should_not_change_field_format_of_existing_custom_field
     field = CustomField.find(1)
     field.field_format = 'int'
@@ -240,5 +254,57 @@ class CustomFieldTest < ActiveSupport::TestCase
   def test_value_from_keyword_for_list_custom_field
     field = CustomField.find(1)
     assert_equal 'PostgreSQL', field.value_from_keyword('postgresql', Issue.find(1))
+  end
+
+  def test_visibile_scope_with_admin_should_return_all_custom_fields
+    CustomField.delete_all
+    fields = [
+      CustomField.generate!(:visible => true),
+      CustomField.generate!(:visible => false),
+      CustomField.generate!(:visible => false, :role_ids => [1, 3]),
+      CustomField.generate!(:visible => false, :role_ids => [1, 2]),
+    ]
+
+    assert_equal 4, CustomField.visible(User.find(1)).count
+  end
+
+  def test_visibile_scope_with_non_admin_user_should_return_visible_custom_fields
+    CustomField.delete_all
+    fields = [
+      CustomField.generate!(:visible => true),
+      CustomField.generate!(:visible => false),
+      CustomField.generate!(:visible => false, :role_ids => [1, 3]),
+      CustomField.generate!(:visible => false, :role_ids => [1, 2]),
+    ]
+    user = User.generate!
+    User.add_to_project(user, Project.first, Role.find(3))
+
+    assert_equal [fields[0], fields[2]], CustomField.visible(user).order("id").to_a
+  end
+
+  def test_visibile_scope_with_anonymous_user_should_return_visible_custom_fields
+    CustomField.delete_all
+    fields = [
+      CustomField.generate!(:visible => true),
+      CustomField.generate!(:visible => false),
+      CustomField.generate!(:visible => false, :role_ids => [1, 3]),
+      CustomField.generate!(:visible => false, :role_ids => [1, 2]),
+    ]
+
+    assert_equal [fields[0]], CustomField.visible(User.anonymous).order("id").to_a
+  end
+
+  def test_float_cast_blank_value_should_return_nil
+    field = CustomField.new(:field_format => 'float')
+    assert_equal nil, field.cast_value(nil)
+    assert_equal nil, field.cast_value('')
+  end
+
+  def test_float_cast_valid_value_should_return_float
+    field = CustomField.new(:field_format => 'float')
+    assert_equal 12.0, field.cast_value('12')
+    assert_equal 12.5, field.cast_value('12.5')
+    assert_equal 12.5, field.cast_value('+12.5')
+    assert_equal -12.5, field.cast_value('-12.5')
   end
 end

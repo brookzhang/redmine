@@ -20,7 +20,15 @@ class AccountController < ApplicationController
   include CustomFieldsHelper
 
   # prevents login action to be filtered by check_if_login_required application scope filter
-  skip_before_filter :check_if_login_required
+  skip_before_filter :check_if_login_required, :check_password_change
+
+  # Overrides ApplicationController#verify_authenticity_token to disable
+  # token verification on openid callbacks
+  def verify_authenticity_token
+    unless using_open_id?
+      super
+    end
+  end
 
   # Login request and validation
   def login
@@ -75,9 +83,13 @@ class AccountController < ApplicationController
     else
       if request.post?
         user = User.find_by_mail(params[:mail].to_s)
-        # user not found or not active
-        unless user && user.active?
+        # user not found
+        unless user
           flash.now[:error] = l(:notice_account_unknown_email)
+          return
+        end
+        unless user.active?
+          handle_inactive_user(user, lost_password_path)
           return
         end
         # user cannot change its password
@@ -152,6 +164,19 @@ class AccountController < ApplicationController
     redirect_to signin_path
   end
 
+  # Sends a new account activation email
+  def activation_email
+    if session[:registered_user_id] && Setting.self_registration == '1'
+      user_id = session.delete(:registered_user_id).to_i
+      user = User.find_by_id(user_id)
+      if user && user.registered?
+        register_by_email_activation(user)
+        return
+      end
+    end
+    redirect_to(home_url)
+  end
+
   private
 
   def authenticate_user
@@ -163,7 +188,7 @@ class AccountController < ApplicationController
   end
 
   def password_authentication
-    user = User.try_to_login(params[:username], params[:password])
+    user = User.try_to_login(params[:username], params[:password], false)
 
     if user.nil?
       invalid_credentials
@@ -171,25 +196,31 @@ class AccountController < ApplicationController
       onthefly_creation_failed(user, {:login => user.login, :auth_source_id => user.auth_source_id })
     else
       # Valid user
-      successful_authentication(user)
+      if user.active?
+        successful_authentication(user)
+      else
+        handle_inactive_user(user)
+      end
     end
   end
 
   def open_id_authenticate(openid_url)
-    authenticate_with_open_id(openid_url, :required => [:nickname, :fullname, :email], :return_to => signin_url, :method => :post) do |result, identity_url, registration|
+    back_url = signin_url(:autologin => params[:autologin])
+    authenticate_with_open_id(
+          openid_url, :required => [:nickname, :fullname, :email],
+          :return_to => back_url, :method => :post
+    ) do |result, identity_url, registration|
       if result.successful?
         user = User.find_or_initialize_by_identity_url(identity_url)
         if user.new_record?
           # Self-registration off
           (redirect_to(home_url); return) unless Setting.self_registration?
-
           # Create on the fly
           user.login = registration['nickname'] unless registration['nickname'].nil?
           user.mail = registration['email'] unless registration['email'].nil?
           user.firstname, user.lastname = registration['fullname'].split(' ') unless registration['fullname'].nil?
           user.random_password
           user.register
-
           case Setting.self_registration
           when '1'
             register_by_email_activation(user) do
@@ -209,7 +240,7 @@ class AccountController < ApplicationController
           if user.active?
             successful_authentication(user)
           else
-            account_pending
+            handle_inactive_user(user)
           end
         end
       end
@@ -230,7 +261,6 @@ class AccountController < ApplicationController
 
   def set_autologin_cookie(user)
     token = Token.create(:user => user, :action => 'autologin')
-    cookie_name = Redmine::Configuration['autologin_cookie_name'] || 'autologin'
     cookie_options = {
       :value => token.value,
       :expires => 1.year.from_now,
@@ -238,7 +268,7 @@ class AccountController < ApplicationController
       :secure => (Redmine::Configuration['autologin_cookie_secure'] ? true : false),
       :httponly => true
     }
-    cookies[cookie_name] = cookie_options
+    cookies[autologin_cookie_name] = cookie_options
   end
 
   # Onthefly creation failed, display the registration form to fill/fix attributes
@@ -260,7 +290,7 @@ class AccountController < ApplicationController
     token = Token.new(:user => user, :action => "register")
     if user.save and token.save
       Mailer.register(token).deliver
-      flash[:notice] = l(:notice_account_register_done)
+      flash[:notice] = l(:notice_account_register_done, :email => user.mail)
       redirect_to signin_path
     else
       yield if block_given?
@@ -290,14 +320,32 @@ class AccountController < ApplicationController
     if user.save
       # Sends an email to the administrators
       Mailer.account_activation_request(user).deliver
-      account_pending
+      account_pending(user)
     else
       yield if block_given?
     end
   end
 
-  def account_pending
-    flash[:notice] = l(:notice_account_pending)
-    redirect_to signin_path
+  def handle_inactive_user(user, redirect_path=signin_path)
+    if user.registered?
+      account_pending(user, redirect_path)
+    else
+      account_locked(user, redirect_path)
+    end
+  end
+
+  def account_pending(user, redirect_path=signin_path)
+    if Setting.self_registration == '1'
+      flash[:error] = l(:notice_account_not_activated_yet, :url => activation_email_path)
+      session[:registered_user_id] = user.id
+    else
+      flash[:error] = l(:notice_account_pending)
+    end
+    redirect_to redirect_path
+  end
+
+  def account_locked(user, redirect_path=signin_path)
+    flash[:error] = l(:notice_account_locked)
+    redirect_to redirect_path
   end
 end

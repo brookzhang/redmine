@@ -22,10 +22,10 @@ require File.expand_path('../../test_helper', __FILE__)
 class AttachmentTest < ActiveSupport::TestCase
   fixtures :users, :projects, :roles, :members, :member_roles,
            :enabled_modules, :issues, :trackers, :attachments
-  
+
   class MockFile
     attr_reader :original_filename, :content_type, :content, :size
-    
+
     def initialize(attributes)
       @original_filename = attributes[:original_filename]
       @content_type = attributes[:content_type]
@@ -40,6 +40,13 @@ class AttachmentTest < ActiveSupport::TestCase
 
   def test_container_for_new_attachment_should_be_nil
     assert_nil Attachment.new.container
+  end
+
+  def test_filename_should_remove_eols
+    assert_equal "line_feed", Attachment.new(:filename => "line\nfeed").filename
+    assert_equal "line_feed", Attachment.new(:filename => "some\npath/line\nfeed").filename
+    assert_equal "carriage_return", Attachment.new(:filename => "carriage\rreturn").filename
+    assert_equal "carriage_return", Attachment.new(:filename => "some\rpath/carriage\rreturn").filename
   end
 
   def test_create
@@ -93,7 +100,7 @@ class AttachmentTest < ActiveSupport::TestCase
   def test_description_length_should_be_validated
     a = Attachment.new(:description => 'a' * 300)
     assert !a.save
-    assert_not_nil a.errors[:description]
+    assert_not_equal [], a.errors[:description]
   end
 
   def test_destroy
@@ -146,12 +153,12 @@ class AttachmentTest < ActiveSupport::TestCase
                             :author => User.find(1))
     assert a1.disk_filename != a2.disk_filename
   end
-  
+
   def test_filename_should_be_basenamed
     a = Attachment.new(:file => MockFile.new(:original_filename => "path/to/the/file"))
     assert_equal 'file', a.filename
   end
-  
+
   def test_filename_should_be_sanitized
     a = Attachment.new(:file => MockFile.new(:original_filename => "valid:[] invalid:?%*|\"'<>chars"))
     assert_equal 'valid_[] invalid_chars', a.filename

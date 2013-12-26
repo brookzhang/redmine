@@ -86,21 +86,6 @@ module TimelogHelper
                         value)
   end
 
-  def entries_to_csv(entries, query, options={})
-    encoding = l(:general_csv_encoding)
-    columns = (options[:columns] == 'all' ? query.available_inline_columns : query.inline_columns)
-
-    export = FCSV.generate(:col_sep => l(:general_csv_separator)) do |csv|
-      # csv header fields
-      csv << columns.collect {|c| Redmine::CodesetUtil.from_utf8(c.caption.to_s, encoding) }
-      # csv lines
-      entries.each do |entry|
-        csv << columns.collect {|c| Redmine::CodesetUtil.from_utf8(csv_content(c, entry), encoding) }
-      end
-    end
-    export
-  end
-
   def format_criteria_value(criteria_options, value)
     if value.blank?
       "[#{l(:label_none)}]"
@@ -111,8 +96,10 @@ module TimelogHelper
       else
         obj
       end
+    elsif cf = criteria_options[:custom_field]
+      format_value(value, cf)
     else
-      format_value(value, criteria_options[:format])
+      value.to_s
     end
   end
 
@@ -122,14 +109,14 @@ module TimelogHelper
       # Column headers
       headers = report.criteria.collect {|criteria| l(report.available_criteria[criteria][:label]) }
       headers += report.periods
-      headers << l(:label_total)
+      headers << l(:label_total_time)
       csv << headers.collect {|c| Redmine::CodesetUtil.from_utf8(
                                     c.to_s,
                                     l(:general_csv_encoding) ) }
       # Content
       report_criteria_to_csv(csv, report.available_criteria, report.columns, report.criteria, report.periods, report.hours)
       # Total row
-      str_total = Redmine::CodesetUtil.from_utf8(l(:label_total), l(:general_csv_encoding))
+      str_total = Redmine::CodesetUtil.from_utf8(l(:label_total_time), l(:general_csv_encoding))
       row = [ str_total ] + [''] * (report.criteria.size - 1)
       total = 0
       report.periods.each do |period|

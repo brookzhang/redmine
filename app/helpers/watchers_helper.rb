@@ -28,7 +28,7 @@ module WatchersHelper
     return '' unless user && user.logged?
     objects = Array.wrap(objects)
 
-    watched = objects.any? {|object| object.watched_by?(user)}
+    watched = Watcher.any_watched?(objects, user)
     css = [watcher_css(objects), watched ? 'icon icon-fav' : 'icon icon-fav-off'].join(' ')
     text = watched ? l(:button_unwatch) : l(:button_watch)
     url = watch_path(
@@ -63,11 +63,11 @@ module WatchersHelper
                :user_id => user}
         s << ' '
         s << link_to(image_tag('delete.png'), url,
-                     :remote => true, :method => 'post', :style => "vertical-align: middle", :class => "delete")
+                     :remote => true, :method => 'delete', :class => "delete")
       end
-      content << content_tag('li', s)
+      content << content_tag('li', s, :class => "user-#{user.id}")
     end
-    content.present? ? content_tag('ul', content) : content
+    content.present? ? content_tag('ul', content, :class => 'watchers') : content
   end
 
   def watchers_checkboxes(object, users, checked=nil)

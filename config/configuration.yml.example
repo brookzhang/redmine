@@ -133,7 +133,7 @@ default:
   scm_bazaar_command:
   scm_darcs_command:
 
-  # Absolute path to the scm commands errors (stderr) log file.
+  # Absolute path to the SCM commands errors (stderr) log file.
   # The default is to log in the 'log' directory of your Redmine instance.
   # Example:
   # scm_stderr_log_file: /var/log/redmine_scm_stderr.log
@@ -196,6 +196,11 @@ default:
 
   # Maximum number of simultaneous AJAX uploads
   #max_concurrent_ajax_uploads: 2
+
+  # Configure OpenIdAuthentication.store
+  #
+  # allowed values: :memory, :file, :memcache
+  #openid_authentication_store: :memory
 
 # specific configuration options for production environment
 # that overrides the default ones

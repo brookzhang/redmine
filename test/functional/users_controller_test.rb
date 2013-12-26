@@ -33,12 +33,6 @@ class UsersControllerTest < ActionController::TestCase
     get :index
     assert_response :success
     assert_template 'index'
-  end
-
-  def test_index
-    get :index
-    assert_response :success
-    assert_template 'index'
     assert_not_nil assigns(:users)
     # active users only
     assert_nil assigns(:users).detect {|u| !u.active?}
@@ -218,12 +212,55 @@ class UsersControllerTest < ActionController::TestCase
     assert_equal '0', user.pref[:warn_on_leaving_unsaved]
   end
 
+  def test_create_with_generate_password_should_email_the_password
+    assert_difference 'User.count' do
+      post :create, :user => {
+        :login => 'randompass',
+        :firstname => 'Random',
+        :lastname => 'Pass',
+        :mail => 'randompass@example.net',
+        :language => 'en',
+        :generate_password => '1',
+        :password => '',
+        :password_confirmation => ''
+      }, :send_information => 1
+    end
+    user = User.order('id DESC').first
+    assert_equal 'randompass', user.login
+
+    mail = ActionMailer::Base.deliveries.last
+    assert_not_nil mail
+    m = mail_body(mail).match(/Password: ([a-zA-Z0-9]+)/)
+    assert m
+    password = m[1]
+    assert user.check_password?(password)
+  end
+
   def test_create_with_failure
     assert_no_difference 'User.count' do
       post :create, :user => {}
     end
     assert_response :success
     assert_template 'new'
+  end
+
+  def test_create_with_failure_sould_preserve_preference
+    assert_no_difference 'User.count' do
+      post :create,
+        :user => {},
+        :pref => {
+          'no_self_notified' => '1',
+          'hide_mail' => '1',
+          'time_zone' => 'Paris',
+          'comments_sorting' => 'desc',
+          'warn_on_leaving_unsaved' => '0'
+        }
+    end
+    assert_response :success
+    assert_template 'new'
+
+    assert_select 'select#pref_time_zone option[selected=selected]', :text => /Paris/
+    assert_select 'input#pref_no_self_notified[value=1][checked=checked]'
   end
 
   def test_edit
@@ -290,6 +327,37 @@ class UsersControllerTest < ActionController::TestCase
     assert_mail_body_match 'newpass123', mail
   end
 
+  def test_update_with_generate_password_should_email_the_password
+    ActionMailer::Base.deliveries.clear
+    Setting.bcc_recipients = '1'
+
+    put :update, :id => 2, :user => {
+      :generate_password => '1',
+      :password => '',
+      :password_confirmation => ''
+    }, :send_information => '1'
+
+    mail = ActionMailer::Base.deliveries.last
+    assert_not_nil mail
+    m = mail_body(mail).match(/Password: ([a-zA-Z0-9]+)/)
+    assert m
+    password = m[1]
+    assert User.find(2).check_password?(password)
+  end
+
+  def test_update_without_generate_password_should_not_change_password
+    put :update, :id => 2, :user => {
+      :firstname => 'changed',
+      :generate_password => '0',
+      :password => '',
+      :password_confirmation => ''
+    }, :send_information => '1'
+
+    user = User.find(2)
+    assert_equal 'changed', user.firstname
+    assert user.check_password?('jsmith')
+  end
+
   def test_update_user_switchin_from_auth_source_to_password_authentication
     # Configure as auth source
     u = User.find(2)
@@ -309,20 +377,28 @@ class UsersControllerTest < ActionController::TestCase
     u = User.find(2)
     assert_equal [1, 2, 5], u.projects.collect{|p| p.id}.sort
     assert_equal [1, 2, 5], u.notified_projects_ids.sort
-    assert_tag :tag => 'input',
-               :attributes => {
-                  :id    => 'notified_project_ids_',
-                  :value => 1,
-                }
+    assert_select 'input[name=?][value=?]', 'user[notified_project_ids][]', '1'
     assert_equal 'all', u.mail_notification
     put :update, :id => 2,
         :user => {
-           :mail_notification => 'selected',
-         },
-        :notified_project_ids => [1, 2]
+          :mail_notification => 'selected',
+          :notified_project_ids => [1, 2]
+        }
     u = User.find(2)
     assert_equal 'selected', u.mail_notification
     assert_equal [1, 2], u.notified_projects_ids.sort
+  end
+
+  def test_update_status_should_not_update_attributes
+    user = User.find(2)
+    user.pref[:no_self_notified] = '1'
+    user.pref.save
+
+    put :update, :id => 2, :user => {:status => 3}
+    assert_response 302
+    user = User.find(2)
+    assert_equal 3, user.status
+    assert_equal '1', user.pref[:no_self_notified]
   end
 
   def test_destroy

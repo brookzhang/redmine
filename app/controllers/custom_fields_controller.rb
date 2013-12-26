@@ -21,13 +21,23 @@ class CustomFieldsController < ApplicationController
   before_filter :require_admin
   before_filter :build_new_custom_field, :only => [:new, :create]
   before_filter :find_custom_field, :only => [:edit, :update, :destroy]
+  accept_api_auth :index
 
   def index
-    @custom_fields_by_type = CustomField.all.group_by {|f| f.class.name }
-    @tab = params[:tab] || 'IssueCustomField'
+    respond_to do |format|
+      format.html {
+        @custom_fields_by_type = CustomField.all.group_by {|f| f.class.name }
+        @tab = params[:tab] || 'IssueCustomField'
+      }
+      format.api {
+        @custom_fields = CustomField.all
+      }
+    end
   end
 
   def new
+    @custom_field.field_format = 'string' if @custom_field.field_format.blank?
+    @custom_field.default_value = nil
   end
 
   def create
@@ -68,8 +78,6 @@ class CustomFieldsController < ApplicationController
     @custom_field = CustomField.new_subclass_instance(params[:type], params[:custom_field])
     if @custom_field.nil?
       render_404
-    else
-      @custom_field.default_value = nil
     end
   end
 

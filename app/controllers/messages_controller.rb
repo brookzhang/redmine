@@ -35,7 +35,7 @@ class MessagesController < ApplicationController
     page = params[:page]
     # Find the page of the requested reply
     if params[:r] && page.nil?
-      offset = @topic.children.count(:conditions => ["#{Message.table_name}.id < ?", params[:r].to_i])
+      offset = @topic.children.where("#{Message.table_name}.id < ?", params[:r].to_i).count
       page = 1 + offset / REPLIES_PER_PAGE
     end
 
@@ -125,7 +125,7 @@ class MessagesController < ApplicationController
 
 private
   def find_message
-    find_board
+    return unless find_board
     @message = @board.messages.find(params[:id], :include => :parent)
     @topic = @message.root
   rescue ActiveRecord::RecordNotFound
@@ -137,5 +137,6 @@ private
     @project = @board.project
   rescue ActiveRecord::RecordNotFound
     render_404
+    nil
   end
 end

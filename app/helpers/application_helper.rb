@@ -79,7 +79,8 @@ module ApplicationHelper
         subject = truncate(subject, :length => options[:truncate])
       end
     end
-    s = link_to text, issue_path(issue), :class => issue.css_classes, :title => title
+    only_path = options[:only_path].nil? ? true : options[:only_path]
+    s = link_to text, issue_path(issue, :only_path => only_path), :class => issue.css_classes, :title => title
     s << h(": #{subject}") if subject
     s = h("#{issue.project} - ") + s if options[:project]
     s
@@ -152,6 +153,47 @@ module ApplicationHelper
       h(project.name)
     else
       link_to project.name, project_path(project, options), html_options
+    end
+  end
+
+  # Helper that formats object for html or text rendering
+  def format_object(object, html=true)
+    case object.class.name
+    when 'Array'
+      object.map {|o| format_object(o, html)}.join(', ').html_safe
+    when 'Time'
+      format_time(object)
+    when 'Date'
+      format_date(object)
+    when 'Fixnum'
+      object.to_s
+    when 'Float'
+      sprintf "%.2f", object
+    when 'User'
+      html ? link_to_user(object) : object.to_s
+    when 'Project'
+      html ? link_to_project(object) : object.to_s
+    when 'Version'
+      html ? link_to(object.name, version_path(object)) : object.to_s
+    when 'TrueClass'
+      l(:general_text_Yes)
+    when 'FalseClass'
+      l(:general_text_No)
+    when 'Issue'
+      object.visible? && html ? link_to_issue(object) : "##{object.id}"
+    when 'CustomValue', 'CustomFieldValue'
+      if object.custom_field
+        f = object.custom_field.format.formatted_custom_value(self, object, html)
+        if f.nil? || f.is_a?(String)
+          f
+        else
+          format_object(f, html)
+        end
+      else
+        object.value.to_s
+      end
+    else
+      html ? h(object) : object.to_s
     end
   end
 
@@ -330,7 +372,7 @@ module ApplicationHelper
     end
     groups = ''
     collection.sort.each do |element|
-      selected_attribute = ' selected="selected"' if option_value_selected?(element, selected)
+      selected_attribute = ' selected="selected"' if option_value_selected?(element, selected) || element.id.to_s == selected
       (element.is_a?(Group) ? groups : s) << %(<option value="#{element.id}"#{selected_attribute}>#{h element.name}</option>)
     end
     unless groups.empty?
@@ -343,9 +385,13 @@ module ApplicationHelper
   def options_for_membership_project_select(principal, projects)
     options = content_tag('option', "--- #{l(:actionview_instancetag_blank_option)} ---")
     options << project_tree_options_for_select(projects) do |p|
-      {:disabled => principal.projects.include?(p)}
+      {:disabled => principal.projects.to_a.include?(p)}
     end
     options
+  end
+
+  def option_tag(name, text, value, selected=nil, options={})
+    content_tag 'option', value, options.merge(:value => value, :selected => (value == selected))
   end
 
   # Truncates and returns the string as a single line
@@ -380,7 +426,7 @@ module ApplicationHelper
     if @project
       link_to(text, {:controller => 'activities', :action => 'index', :id => @project, :from => User.current.time_to_date(time)}, :title => format_time(time))
     else
-      content_tag('acronym', text, :title => format_time(time))
+      content_tag('abbr', text, :title => format_time(time))
     end
   end
 
@@ -445,12 +491,31 @@ module ApplicationHelper
     end
   end
 
+  # Returns a h2 tag and sets the html title with the given arguments
+  def title(*args)
+    strings = args.map do |arg|
+      if arg.is_a?(Array) && arg.size >= 2
+        link_to(*arg)
+      else
+        h(arg.to_s)
+      end
+    end
+    html_title args.reverse.map {|s| (s.is_a?(Array) ? s.first : s).to_s}
+    content_tag('h2', strings.join(' &#187; ').html_safe)
+  end
+
+  # Sets the html title
+  # Returns the html title when called without arguments
+  # Current project name and app_title and automatically appended
+  # Exemples:
+  #   html_title 'Foo', 'Bar'
+  #   html_title # => 'Foo - Bar - My Project - Redmine'
   def html_title(*args)
     if args.empty?
       title = @html_title || []
       title << @project.name if @project
       title << Setting.app_title unless Setting.app_title == title.last
-      title.select {|t| !t.blank? }.join(' - ')
+      title.reject(&:blank?).join(' - ')
     else
       @html_title ||= []
       @html_title += args
@@ -465,13 +530,18 @@ module ApplicationHelper
       css << 'theme-' + theme.name
     end
 
+    css << 'project-' + @project.identifier if @project && @project.identifier.present?
     css << 'controller-' + controller_name
     css << 'action-' + action_name
     css.join(' ')
   end
 
   def accesskey(s)
-    Redmine::AccessKeys.key_for s
+    @used_accesskeys ||= []
+    key = Redmine::AccessKeys.key_for(s)
+    return nil if @used_accesskeys.include?(key)
+    @used_accesskeys << key
+    key
   end
 
   # Formats text according to system settings.
@@ -611,7 +681,7 @@ module ApplicationHelper
             else
               wiki_page_id = page.present? ? Wiki.titleize(page) : nil
               parent = wiki_page.nil? && obj.is_a?(WikiContent) && obj.page && project == link_project ? obj.page.title : nil
-              url_for(:only_path => only_path, :controller => 'wiki', :action => 'show', :project_id => link_project, 
+              url_for(:only_path => only_path, :controller => 'wiki', :action => 'show', :project_id => link_project,
                :id => wiki_page_id, :version => nil, :anchor => anchor, :parent => parent)
             end
           end
@@ -652,6 +722,9 @@ module ApplicationHelper
   #     export:some/file -> Force the download of the file
   #   Forum messages:
   #     message#1218 -> Link to message with id 1218
+  #  Projects:
+  #     project:someproject -> Link to project named "someproject"
+  #     project#3 -> Link to project with id 3
   #
   #   Links can refer other objects from other projects, using project identifier:
   #     identifier:r52
@@ -688,7 +761,7 @@ module ApplicationHelper
           when nil
             if oid.to_s == identifier && issue = Issue.visible.find_by_id(oid, :include => :status)
               anchor = comment_id ? "note-#{comment_id}" : nil
-              link = link_to("##{oid}", {:only_path => only_path, :controller => 'issues', :action => 'show', :id => oid, :anchor => anchor},
+              link = link_to(h("##{oid}#{comment_suffix}"), {:only_path => only_path, :controller => 'issues', :action => 'show', :id => oid, :anchor => anchor},
                                         :class => issue.css_classes,
                                         :title => "#{truncate(issue.subject, :length => 100)} (#{issue.status.name})")
             end
@@ -758,7 +831,7 @@ module ApplicationHelper
                 if repository && (changeset = Changeset.visible.where("repository_id = ? AND scmid LIKE ?", repository.id, "#{name}%").first)
                   link = link_to h("#{project_prefix}#{repo_prefix}#{name}"), {:only_path => only_path, :controller => 'repositories', :action => 'revision', :id => project, :repository_id => repository.identifier_param, :rev => changeset.identifier},
                                                :class => 'changeset',
-                                               :title => truncate_single_line(h(changeset.comments), :length => 100)
+                                               :title => truncate_single_line(changeset.comments, :length => 100)
                 end
               else
                 if repository && User.current.allowed_to?(:browse_repository, project)
@@ -800,7 +873,8 @@ module ApplicationHelper
         content_tag('div',
           link_to(image_tag('edit.png'), options[:edit_section_links].merge(:section => @current_section)),
           :class => 'contextual',
-          :title => l(:button_edit_section)) + heading.html_safe
+          :title => l(:button_edit_section),
+          :id => "section-#{@current_section}") + heading.html_safe
       else
         heading
       end
@@ -971,7 +1045,7 @@ module ApplicationHelper
       html << "</ul></div>\n"
     end
     html.html_safe
-  end  
+  end
 
   def delete_link(url, options={})
     options = {
@@ -985,8 +1059,8 @@ module ApplicationHelper
 
   def preview_link(url, form, target='preview', options={})
     content_tag 'a', l(:label_preview), {
-        :href => "#", 
-        :onclick => %|submitPreview("#{escape_javascript url_for(url)}", "#{escape_javascript form}", "#{escape_javascript target}"); return false;|, 
+        :href => "#",
+        :onclick => %|submitPreview("#{escape_javascript url_for(url)}", "#{escape_javascript form}", "#{escape_javascript target}"); return false;|,
         :accesskey => accesskey(:preview)
       }.merge(options)
   end
@@ -1031,7 +1105,7 @@ module ApplicationHelper
         (pcts[0] > 0 ? content_tag('td', '', :style => "width: #{pcts[0]}%;", :class => 'closed') : ''.html_safe) +
         (pcts[1] > 0 ? content_tag('td', '', :style => "width: #{pcts[1]}%;", :class => 'done') : ''.html_safe) +
         (pcts[2] > 0 ? content_tag('td', '', :style => "width: #{pcts[2]}%;", :class => 'todo') : ''.html_safe)
-      ), :class => 'progress', :style => "width: #{width};").html_safe +
+      ), :class => "progress progress-#{pcts[0]}", :style => "width: #{width};").html_safe +
       content_tag('p', legend, :class => 'percent').html_safe
   end
 
@@ -1064,6 +1138,7 @@ module ApplicationHelper
 
   def include_calendar_headers_tags
     unless @calendar_headers_tags_included
+      tags = javascript_include_tag("datepicker")
       @calendar_headers_tags_included = true
       content_for :header_tags do
         start_of_week = Setting.start_of_week
@@ -1071,15 +1146,16 @@ module ApplicationHelper
         # Redmine uses 1..7 (monday..sunday) in settings and locales
         # JQuery uses 0..6 (sunday..saturday), 7 needs to be changed to 0
         start_of_week = start_of_week.to_i % 7
-
-        tags = javascript_tag(
+        tags << javascript_tag(
                    "var datepickerOptions={dateFormat: 'yy-mm-dd', firstDay: #{start_of_week}, " +
-                     "showOn: 'button', buttonImageOnly: true, buttonImage: '" + 
+                     "showOn: 'button', buttonImageOnly: true, buttonImage: '" +
                      path_to_image('/images/calendar.png') +
-                     "', showButtonPanel: true, showWeek: true, showOtherMonths: true, selectOtherMonths: true};")
+                     "', showButtonPanel: true, showWeek: true, showOtherMonths: true, " +
+                     "selectOtherMonths: true, changeMonth: true, changeYear: true, " +
+                     "beforeShow: beforeShowDatePicker};")
         jquery_locale = l('jquery.locale', :default => current_language.to_s)
         unless jquery_locale == 'en'
-          tags << javascript_include_tag("i18n/jquery.ui.datepicker-#{jquery_locale}.js") 
+          tags << javascript_include_tag("i18n/jquery.ui.datepicker-#{jquery_locale}.js")
         end
         tags
       end
@@ -1139,18 +1215,13 @@ module ApplicationHelper
     super sources, options
   end
 
-  def content_for(name, content = nil, &block)
-    @has_content ||= {}
-    @has_content[name] = true
-    super(name, content, &block)
-  end
-
+  # TODO: remove this in 2.5.0
   def has_content?(name)
-    (@has_content && @has_content[name]) || false
+    content_for?(name)
   end
 
   def sidebar_content?
-    has_content?(:sidebar) || view_layouts_base_sidebar_hook_response.present?
+    content_for?(:sidebar) || view_layouts_base_sidebar_hook_response.present?
   end
 
   def view_layouts_base_sidebar_hook_response
@@ -1180,7 +1251,7 @@ module ApplicationHelper
 
   def sanitize_anchor_name(anchor)
     if ''.respond_to?(:encoding) || RUBY_PLATFORM == 'java'
-      anchor.gsub(%r{[^\p{Word}\s\-]}, '').gsub(%r{\s+(\-+\s*)?}, '-')
+      anchor.gsub(%r{[^\s\-\p{Word}]}, '').gsub(%r{\s+(\-+\s*)?}, '-')
     else
       # TODO: remove when ruby1.8 is no longer supported
       anchor.gsub(%r{[^\w\s\-]}, '').gsub(%r{\s+(\-+\s*)?}, '-')

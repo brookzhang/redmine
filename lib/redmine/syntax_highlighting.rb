@@ -20,7 +20,6 @@ module Redmine
 
     class << self
       attr_reader :highlighter
-      delegate :highlight_by_filename, :highlight_by_language, :to => :highlighter
 
       def highlighter=(name)
         if name.is_a?(Module)
@@ -29,11 +28,22 @@ module Redmine
           @highlighter = const_get(name)
         end
       end
+
+      def highlight_by_filename(text, filename)
+        highlighter.highlight_by_filename(text, filename)
+      rescue
+        ERB::Util.h(text)
+      end
+
+      def highlight_by_language(text, language)
+        highlighter.highlight_by_language(text, language)
+      rescue
+        ERB::Util.h(text)
+      end
     end
 
     module CodeRay
       require 'coderay'
-      require 'coderay/helpers/file_type'
 
       class << self
         # Highlights +text+ as the content of +filename+

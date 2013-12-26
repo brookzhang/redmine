@@ -131,7 +131,8 @@ class WatchersControllerTest < ActionController::TestCase
   def test_create
     @request.session[:user_id] = 2
     assert_difference('Watcher.count') do
-      xhr :post, :create, :object_type => 'issue', :object_id => '2', :watcher => {:user_id => '4'}
+      xhr :post, :create, :object_type => 'issue', :object_id => '2',
+          :watcher => {:user_id => '4'}
       assert_response :success
       assert_match /watchers/, response.body
       assert_match /ajax-modal/, response.body
@@ -142,7 +143,8 @@ class WatchersControllerTest < ActionController::TestCase
   def test_create_multiple
     @request.session[:user_id] = 2
     assert_difference('Watcher.count', 2) do
-      xhr :post, :create, :object_type => 'issue', :object_id => '2', :watcher => {:user_ids => ['4', '7']}
+      xhr :post, :create, :object_type => 'issue', :object_id => '2',
+          :watcher => {:user_ids => ['4', '7']}
       assert_response :success
       assert_match /watchers/, response.body
       assert_match /ajax-modal/, response.body
@@ -162,15 +164,46 @@ class WatchersControllerTest < ActionController::TestCase
     assert_select 'input[name=?][value=9]', 'watcher[user_ids][]'
   end
 
+  def test_search_non_member_on_create
+    @request.session[:user_id] = 2
+    project = Project.find_by_name("ecookbook")
+    user = User.generate!(:firstname => 'issue15622')
+    membership = user.membership(project)
+    assert_nil membership
+    xhr :get, :autocomplete_for_user, :q => 'issue15622', :project_id => 'ecookbook'
+    assert_response :success
+    assert_select 'input', :count => 1
+  end
+
   def test_autocomplete_on_watchable_update
     @request.session[:user_id] = 2
-    xhr :get, :autocomplete_for_user, :q => 'mi', :object_id => '2' , :object_type => 'issue', :project_id => 'ecookbook'
+    xhr :get, :autocomplete_for_user, :q => 'mi', :object_id => '2',
+        :object_type => 'issue', :project_id => 'ecookbook'
     assert_response :success
     assert_select 'input', :count => 3
     assert_select 'input[name=?][value=2]', 'watcher[user_ids][]'
     assert_select 'input[name=?][value=8]', 'watcher[user_ids][]'
     assert_select 'input[name=?][value=9]', 'watcher[user_ids][]'
+  end
 
+  def test_search_and_add_non_member_on_update
+    @request.session[:user_id] = 2
+    project = Project.find_by_name("ecookbook")
+    user = User.generate!(:firstname => 'issue15622')
+    membership = user.membership(project)
+    assert_nil membership
+    xhr :get, :autocomplete_for_user, :q => 'issue15622', :object_id => '2',
+        :object_type => 'issue', :project_id => 'ecookbook'
+    assert_response :success
+    assert_select 'input', :count => 1
+    assert_difference('Watcher.count', 1) do
+      xhr :post, :create, :object_type => 'issue', :object_id => '2',
+          :watcher => {:user_ids => ["#{user.id}"]}
+      assert_response :success
+      assert_match /watchers/, response.body
+      assert_match /ajax-modal/, response.body
+    end
+    assert Issue.find(2).watched_by?(user)
   end
 
   def test_append
@@ -186,7 +219,7 @@ class WatchersControllerTest < ActionController::TestCase
   def test_remove_watcher
     @request.session[:user_id] = 2
     assert_difference('Watcher.count', -1) do
-      xhr :post, :destroy, :object_type => 'issue', :object_id => '2', :user_id => '3'
+      xhr :delete, :destroy, :object_type => 'issue', :object_id => '2', :user_id => '3'
       assert_response :success
       assert_match /watchers/, response.body
     end

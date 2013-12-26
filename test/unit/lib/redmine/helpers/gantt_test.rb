@@ -57,11 +57,26 @@ class Redmine::Helpers::GanttHelperTest < ActionView::TestCase
 
   context "#number_of_rows" do
     context "with one project" do
-      should "return the number of rows just for that project"
+      should "return the number of rows just for that project" do
+        p1, p2 = Project.generate!, Project.generate!
+        i1, i2 = Issue.generate!(:project => p1), Issue.generate!(:project => p2)
+        create_gantt(p1)
+        assert_equal 2, @gantt.number_of_rows
+      end
     end
 
     context "with no project" do
-      should "return the total number of rows for all the projects, resursively"
+      should "return the total number of rows for all the projects, resursively" do
+        p1, p2 = Project.generate!, Project.generate!
+        create_gantt(nil)
+        #fix the return value of #number_of_rows_on_project() to an arbitrary value
+        #so that we really only test #number_of_rows
+        @gantt.stubs(:number_of_rows_on_project).returns(7)
+        #also fix #projects because we want to test #number_of_rows in isolation
+        @gantt.stubs(:projects).returns(Project.all)
+        #actual test
+        assert_equal Project.count*7, @gantt.number_of_rows
+      end
     end
 
     should "not exceed max_rows option" do
@@ -276,18 +291,6 @@ class Redmine::Helpers::GanttHelperTest < ActionView::TestCase
     end
   end
 
-  context "#render_project" do
-    should "be tested"
-  end
-
-  context "#render_issues" do
-    should "be tested"
-  end
-
-  context "#render_version" do
-    should "be tested"
-  end
-
   context "#subject_for_project" do
     setup do
       create_gantt
@@ -322,8 +325,6 @@ class Redmine::Helpers::GanttHelperTest < ActionView::TestCase
         assert_select 'div span.project-overdue'
       end
     end
-    should "test the PNG format"
-    should "test the PDF format"
   end
 
   context "#line_for_project" do
@@ -353,30 +354,6 @@ class Redmine::Helpers::GanttHelperTest < ActionView::TestCase
         should "be the total width of the project" do
           @output_buffer = @gantt.line_for_project(@project, {:format => :html, :zoom => 4})
           assert_select "div.project.task_todo[style*=width:58px]", true, @output_buffer
-        end
-      end
-
-      context "late line" do
-        should_eventually "start from the starting point on the left" do
-          @output_buffer = @gantt.line_for_project(@project, {:format => :html, :zoom => 4})
-          assert_select "div.project.task_late[style*=left:28px]", true, @output_buffer
-        end
-
-        should_eventually "be the total delayed width of the project" do
-          @output_buffer = @gantt.line_for_project(@project, {:format => :html, :zoom => 4})
-          assert_select "div.project.task_late[style*=width:30px]", true, @output_buffer
-        end
-      end
-
-      context "done line" do
-        should_eventually "start from the starting point on the left" do
-          @output_buffer = @gantt.line_for_project(@project, {:format => :html, :zoom => 4})
-          assert_select "div.project.task_done[style*=left:28px]", true, @output_buffer
-        end
-
-        should_eventually "Be the total done width of the project"  do
-          @output_buffer = @gantt.line_for_project(@project, {:format => :html, :zoom => 4})
-          assert_select "div.project.task_done[style*=width:18px]", true, @output_buffer
         end
       end
 
@@ -419,15 +396,8 @@ class Redmine::Helpers::GanttHelperTest < ActionView::TestCase
           @output_buffer = @gantt.line_for_project(@project, {:format => :html, :zoom => 4})
           assert_select "div.project.label", /#{@project.name}/
         end
-
-        should_eventually "show the percent complete" do
-          @output_buffer = @gantt.line_for_project(@project, {:format => :html, :zoom => 4})
-          assert_select "div.project.label", /0%/
-        end
       end
     end
-    should "test the PNG format"
-    should "test the PDF format"
   end
 
   context "#subject_for_version" do
@@ -479,8 +449,6 @@ class Redmine::Helpers::GanttHelperTest < ActionView::TestCase
         assert_select 'div span.version-behind-schedule'
       end
     end
-    should "test the PNG format"
-    should "test the PDF format"
   end
 
   context "#line_for_version" do
@@ -583,8 +551,6 @@ class Redmine::Helpers::GanttHelperTest < ActionView::TestCase
         end
       end
     end
-    should "test the PNG format"
-    should "test the PDF format"
   end
 
   context "#subject_for_issue" do
@@ -628,8 +594,6 @@ class Redmine::Helpers::GanttHelperTest < ActionView::TestCase
         assert_select 'div span.issue-overdue'
       end
     end
-    should "test the PNG format"
-    should "test the PDF format"
   end
 
   context "#line_for_issue" do
@@ -735,15 +699,82 @@ class Redmine::Helpers::GanttHelperTest < ActionView::TestCase
       @output_buffer = @gantt.line_for_issue(@issue, {:format => :html, :zoom => 4})
       assert_select "div.tooltip", /#{@issue.subject}/
     end
-    should "test the PNG format"
-    should "test the PDF format"
   end
 
-  context "#to_image" do
-    should "be tested"
+  def test_sort_issues_no_date
+    project = Project.generate!
+    issue1 = Issue.generate!(:subject => "test", :project => project)
+    issue2 = Issue.generate!(:subject => "test", :project => project)
+    assert issue1.root_id < issue2.root_id
+    child1 = Issue.generate!(:parent_issue_id => issue1.id, :subject => 'child',
+                             :project => project)
+    child2 = Issue.generate!(:parent_issue_id => issue1.id, :subject => 'child',
+                             :project => project)
+    child3 = Issue.generate!(:parent_issue_id => child1.id, :subject => 'child',
+                             :project => project)
+    assert_equal child1.root_id, child2.root_id
+    assert child1.lft < child2.lft
+    assert child3.lft < child2.lft
+    issues = [child3, child2, child1, issue2, issue1]
+    Redmine::Helpers::Gantt.sort_issues!(issues)
+    assert_equal [issue1.id, child1.id, child3.id, child2.id, issue2.id],
+                  issues.map{|v| v.id}
   end
 
-  context "#to_pdf" do
-    should "be tested"
+  def test_sort_issues_root_only
+    project = Project.generate!
+    issue1 = Issue.generate!(:subject => "test", :project => project)
+    issue2 = Issue.generate!(:subject => "test", :project => project)
+    issue3 = Issue.generate!(:subject => "test", :project => project,
+                             :start_date => (today - 1))
+    issue4 = Issue.generate!(:subject => "test", :project => project,
+                             :start_date => (today - 2))
+    issues = [issue4, issue3, issue2, issue1]
+    Redmine::Helpers::Gantt.sort_issues!(issues)
+    assert_equal [issue1.id, issue2.id, issue4.id, issue3.id],
+                  issues.map{|v| v.id}
+  end
+
+  def test_sort_issues_tree
+    project = Project.generate!
+    issue1 = Issue.generate!(:subject => "test", :project => project)
+    issue2 = Issue.generate!(:subject => "test", :project => project,
+                             :start_date => (today - 2))
+    issue1_child1 =
+             Issue.generate!(:parent_issue_id => issue1.id, :subject => 'child',
+                             :project => project)
+    issue1_child2 =
+             Issue.generate!(:parent_issue_id => issue1.id, :subject => 'child',
+                             :project => project, :start_date => (today - 10))
+    issue1_child1_child1 =
+             Issue.generate!(:parent_issue_id => issue1_child1.id, :subject => 'child',
+                             :project => project, :start_date => (today - 8))
+    issue1_child1_child2 =
+             Issue.generate!(:parent_issue_id => issue1_child1.id, :subject => 'child',
+                             :project => project, :start_date => (today - 9))
+    issue1_child1_child1_logic = Redmine::Helpers::Gantt.sort_issue_logic(issue1_child1_child1)
+    assert_equal [[today - 10, issue1.id], [today - 9, issue1_child1.id],
+                  [today - 8, issue1_child1_child1.id]],
+                 issue1_child1_child1_logic
+    issue1_child1_child2_logic = Redmine::Helpers::Gantt.sort_issue_logic(issue1_child1_child2)
+    assert_equal [[today - 10, issue1.id], [today - 9, issue1_child1.id],
+                  [today - 9, issue1_child1_child2.id]],
+                 issue1_child1_child2_logic
+    issues = [issue1_child1_child2, issue1_child1_child1, issue1_child2,
+              issue1_child1, issue2, issue1]
+    Redmine::Helpers::Gantt.sort_issues!(issues)
+    assert_equal [issue1.id, issue1_child1.id, issue1_child2.id,
+                  issue1_child1_child2.id, issue1_child1_child1.id, issue2.id],
+                 issues.map{|v| v.id}
+  end
+
+  def test_sort_versions
+    project = Project.generate!
+    version1 = Version.create!(:project => project, :name => 'test1')
+    version2 = Version.create!(:project => project, :name => 'test2', :effective_date => '2013-10-25')
+    version3 = Version.create!(:project => project, :name => 'test3')
+    version4 = Version.create!(:project => project, :name => 'test4', :effective_date => '2013-10-02')
+
+    assert_equal versions.sort, Redmine::Helpers::Gantt.sort_versions!(versions)
   end
 end
